@@ -1,3 +1,4 @@
+---
 title: InternChat
 emoji: 🤖💬
 colorFrom: indigo
@@ -7,7 +8,7 @@ sdk_version: 3.28.1
 app_file: iChatApp.py
 pinned: false
 license: apache-2.0
-
+---
 
 [[中文文档]](README_CN.md)
 
