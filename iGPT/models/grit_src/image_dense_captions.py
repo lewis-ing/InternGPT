@@ -10,7 +10,7 @@ from detectron2.config import get_cfg
 from detectron2.data.detection_utils import read_image
 from detectron2.utils.logger import setup_logger
 
-sys.path.insert(0, 'iChat/models/grit_src/third_party/CenterNet2/projects/CenterNet2/')
+sys.path.insert(0, 'iGPT/models/grit_src/third_party/CenterNet2/projects/CenterNet2/')
 from centernet.config import add_centernet_config
 from ..grit_src.grit.config import add_grit_config
 
@@ -58,7 +58,7 @@ def setup_cfg(args):
     return cfg
 
 def get_parser(device):
-    arg_dict = {'config_file': "iChat/models/grit_src/configs/GRiT_B_DenseCap_ObjectDet.yaml", 'device': device, 'confidence_threshold': 0.5, 'test_task': 'DenseCap', 'opts': ["MODEL.WEIGHTS", "model_zoo/grit_b_densecap_objectdet.pth"]}
+    arg_dict = {'config_file': "iGPT/models/grit_src/configs/GRiT_B_DenseCap_ObjectDet.yaml", 'device': device, 'confidence_threshold': 0.5, 'test_task': 'DenseCap', 'opts': ["MODEL.WEIGHTS", "model_zoo/grit_b_densecap_objectdet.pth"]}
     return arg_dict
 
 def image_caption_api(image_src, device):

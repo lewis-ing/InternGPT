@@ -25,6 +25,8 @@ from transformers import (
 )
 from .husky_src.husky_chat import Blip2LlaMAForConditionalGeneration
 
+from .husky_src.load_ckpt import apply_delta
+
 from .husky_src.conversation import (
     conv_templates,
     get_default_conv_template,
@@ -64,10 +66,13 @@ def load_model(
 ):
     kwargs = {"torch_dtype": torch.float16}
 
+    if not os.path.exists(model_path[1]):
+        apply_delta(model_path[0], model_path[1], model_path[2])
+
     tokenizer = AutoTokenizer.from_pretrained(
-        model_path, use_fast=False)
+        model_path[1], use_fast=False)
     model = Blip2LlaMAForConditionalGeneration.from_pretrained(
-        model_path, low_cpu_mem_usage=True, **kwargs
+        model_path[1], low_cpu_mem_usage=True, **kwargs
     )
 
     if load_8bit:
@@ -337,7 +342,7 @@ class HuskyVQA:
         self,
         device
     ):
-        model_path="model_zoo/husky-7b-v0_01"
+        model_path=["model_zoo/llama-7b-hf", "model_zoo/husky-7b-v0_01", 'model_zoo/husky-7b-delta-v0_01']
         load_8bit=True
         max_new_tokens=512
         self.chat = Chat(

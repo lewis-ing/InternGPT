@@ -2,14 +2,14 @@
 import os
 os.environ['CURL_CA_BUNDLE'] = ''
 
-from pathlib import Path
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent / "third-party" / "lama"))
-
 try:
     import detectron
 except:
     os.system('pip install git+https://github.com/facebookresearch/detectron2.git')
+
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent / "third-party" / "lama"))
 
 import random
 import torch
@@ -41,13 +41,14 @@ from langchain.agents.tools import Tool
 from langchain.chains.conversation.memory import ConversationBufferMemory
 from langchain.llms.openai import OpenAI
 
-from iChat.models import VideoCaption, ActionRecognition, DenseCaption, GenerateTikTokVideo
-from iChat.models import HuskyVQA, LDMInpainting
-from iChat.models.utils import (cal_dilate_factor, dilate_mask, gen_new_name,
+from iGPT.models import VideoCaption, ActionRecognition, DenseCaption, GenerateTikTokVideo
+from iGPT.models import HuskyVQA, LDMInpainting
+from iGPT.models.utils import (cal_dilate_factor, dilate_mask, gen_new_name,
                                 seed_everything, prompts, blend_gt2pt)
 
-from segment_anything.utils.amg import remove_small_regions
-from segment_anything import build_sam, sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
+# from segment_anything.utils.amg import remove_small_regions
+from segment_anything import build_sam, sam_model_registry, SamAutomaticMaskGenerator
+from iGPT.models.sam_preditor import SamPredictor
 from bark import SAMPLE_RATE, generate_audio
 
 import matplotlib.pyplot as plt
@@ -57,24 +58,25 @@ import easyocr
 from saicinpainting.evaluation.utils import move_to_device
 from saicinpainting.training.trainers import load_checkpoint
 from saicinpainting.evaluation.data import pad_tensor_to_modulo
+import openai
 
 # openai.api_base = 'https://closeai.deno.dev/v1'
 
 GLOBAL_SEED=1912
 
-INTERN_CHAT_PREFIX = """InternChat is designed to be able to assist with a wide range of text and visual related tasks, from answering simple questions to providing in-depth explanations and discussions on a wide range of topics. InternChat is able to generate human-like text based on the input it receives, allowing it to engage in natural-sounding conversations and provide responses that are coherent and relevant to the topic at hand.
+INTERN_CHAT_PREFIX = """InternGPT is designed to be able to assist with a wide range of text and visual related tasks, from answering simple questions to providing in-depth explanations and discussions on a wide range of topics. InternGPT is able to generate human-like text based on the input it receives, allowing it to engage in natural-sounding conversations and provide responses that are coherent and relevant to the topic at hand.
 
-InternChat is able to process and understand large amounts of text and images. As a language model, InternChat can not directly read images, but it has a list of tools to finish different visual tasks. Each image will have a file name formed as "image/xxx.png", and InternChat can invoke different tools to indirectly understand pictures. When talking about images, InternChat is very strict to the file name and will never fabricate nonexistent files. When using tools to generate new image files, InternChat is also known that the image may not be the same as the user's demand, and will use other visual question answering tools or description tools to observe the real image. InternChat is able to use tools in a sequence, and is loyal to the tool observation outputs rather than faking the image content and image file name. It will remember to provide the file name from the last tool observation, if a new image is generated.
+InternGPT is able to process and understand large amounts of text and images. As a language model, InternGPT can not directly read images, but it has a list of tools to finish different visual tasks. Each image will have a file name formed as "image/xxx.png", and InternGPT can invoke different tools to indirectly understand pictures. When talking about images, InternGPT is very strict to the file name and will never fabricate nonexistent files. When using tools to generate new image files, InternGPT is also known that the image may not be the same as the user's demand, and will use other visual question answering tools or description tools to observe the real image. InternGPT is able to use tools in a sequence, and is loyal to the tool observation outputs rather than faking the image content and image file name. It will remember to provide the file name from the last tool observation, if a new image is generated.
 
-Human may provide new figures to InternChat with a description. The description helps InternChat to understand this image, but InternChat should use tools to finish following tasks, rather than directly imagine from the description.
+Human may provide new figures to InternGPT with a description. The description helps InternGPT to understand this image, but InternGPT should use tools to finish following tasks, rather than directly imagine from the description.
 
-Overall, InternChat is a powerful visual dialogue assistant tool that can help with a wide range of tasks and provide valuable insights and information on a wide range of topics. 
+Overall, InternGPT is a powerful visual dialogue assistant tool that can help with a wide range of tasks and provide valuable insights and information on a wide range of topics. 
 
 
 TOOLS:
 ------
 
-InternChat  has access to the following tools:"""
+InternGPT  has access to the following tools:"""
 
 INTERN_CHAT_FORMAT_INSTRUCTIONS = """To use a tool, please use the following format:
 
@@ -102,23 +104,23 @@ Previous conversation history:
 {chat_history}
 
 New input: {input}
-Since InternChat is a text language model, InternChat must use tools to observe images rather than imagination.
-The thoughts and observations are only visible for InternChat, InternChat should remember to repeat important information in the final response for Human. 
+Since InternGPT is a text language model, InternGPT must use tools to observe images rather than imagination.
+The thoughts and observations are only visible for InternGPT, InternGPT should remember to repeat important information in the final response for Human. 
 Thought: Do I need to use a tool? {agent_scratchpad} Let's think step by step.
 """
 
-INTERN_CHAT_PREFIX_CN = """InternChat 旨在能够协助完成范围广泛的文本和视觉相关任务，从回答简单的问题到提供对广泛主题的深入解释和讨论。 InternChat 能够根据收到的输入生成类似人类的文本，使其能够进行听起来自然的对话，并提供连贯且与手头主题相关的响应。
+INTERN_CHAT_PREFIX_CN = """InternGPT 旨在能够协助完成范围广泛的文本和视觉相关任务，从回答简单的问题到提供对广泛主题的深入解释和讨论。 InternGPT 能够根据收到的输入生成类似人类的文本，使其能够进行听起来自然的对话，并提供连贯且与手头主题相关的响应。
 
-InternChat 能够处理和理解大量文本和图像。作为一种语言模型，InternChat 不能直接读取图像，但它有一系列工具来完成不同的视觉任务。每张图片都会有一个文件名，格式为“image/xxx.png”，InternChat可以调用不同的工具来间接理解图片。在谈论图片时，InternChat 对文件名的要求非常严格，绝不会伪造不存在的文件。在使用工具生成新的图像文件时，InternChat也知道图像可能与用户需求不一样，会使用其他视觉问答工具或描述工具来观察真实图像。 InternChat 能够按顺序使用工具，并且忠于工具观察输出，而不是伪造图像内容和图像文件名。如果生成新图像，它将记得提供上次工具观察的文件名。
+InternGPT 能够处理和理解大量文本和图像。作为一种语言模型，InternGPT 不能直接读取图像，但它有一系列工具来完成不同的视觉任务。每张图片都会有一个文件名，格式为“image/xxx.png”，InternGPT可以调用不同的工具来间接理解图片。在谈论图片时，InternGPT 对文件名的要求非常严格，绝不会伪造不存在的文件。在使用工具生成新的图像文件时，InternGPT也知道图像可能与用户需求不一样，会使用其他视觉问答工具或描述工具来观察真实图像。 InternGPT 能够按顺序使用工具，并且忠于工具观察输出，而不是伪造图像内容和图像文件名。如果生成新图像，它将记得提供上次工具观察的文件名。
 
-Human 可能会向 InternChat 提供带有描述的新图形。描述帮助 InternChat 理解这个图像，但 InternChat 应该使用工具来完成以下任务，而不是直接从描述中想象。有些工具将会返回英文描述，但你对用户的聊天应当采用中文。
+Human 可能会向 InternGPT 提供带有描述的新图形。描述帮助 InternGPT 理解这个图像，但 InternGPT 应该使用工具来完成以下任务，而不是直接从描述中想象。有些工具将会返回英文描述，但你对用户的聊天应当采用中文。
 
-总的来说，InternChat 是一个强大的可视化对话辅助工具，可以帮助处理范围广泛的任务，并提供关于范围广泛的主题的有价值的见解和信息。
+总的来说，InternGPT 是一个强大的可视化对话辅助工具，可以帮助处理范围广泛的任务，并提供关于范围广泛的主题的有价值的见解和信息。
 
 工具列表:
 ------
 
-InternChat 可以使用这些工具:"""
+InternGPT 可以使用这些工具:"""
 
 INTERN_CHAT_FORMAT_INSTRUCTIONS_CN = """用户使用中文和你进行聊天，但是工具的参数应当使用英文。如果要调用工具，你必须遵循如下格式:
 
@@ -142,8 +144,8 @@ INTERN_CHAT_SUFFIX_CN = """你对文件名的正确性非常严格，而且永�
 
 开始!
 
-因为InternChat是一个文本语言模型，必须使用工具去观察图片而不是依靠想象。
-推理想法和观察结果只对InternChat可见，需要记得在最终回复时把重要的信息重复给用户，你只能给用户返回中文句子。我们一步一步思考。在你使用工具时，工具的参数只能是英文。
+因为InternGPT是一个文本语言模型，必须使用工具去观察图片而不是依靠想象。
+推理想法和观察结果只对InternGPT可见，需要记得在最终回复时把重要的信息重复给用户，你只能给用户返回中文句子。我们一步一步思考。在你使用工具时，工具的参数只能是英文。
 
 聊天历史:
 {chat_history}
@@ -153,51 +155,6 @@ Thought: Do I need to use a tool? {agent_scratchpad}
 """
 
 os.makedirs('image', exist_ok=True)
-
-
-def cut_dialogue_history(history_memory, keep_last_n_words=500):
-    if history_memory is None or len(history_memory) == 0:
-        return history_memory
-    tokens = history_memory.split()
-    n_tokens = len(tokens)
-    print(f"history_memory:{history_memory}, n_tokens: {n_tokens}")
-    if n_tokens < keep_last_n_words:
-        return history_memory
-    paragraphs = history_memory.split('\n')
-    last_n_tokens = n_tokens
-    while last_n_tokens >= keep_last_n_words:
-        last_n_tokens -= len(paragraphs[0].split(' '))
-        paragraphs = paragraphs[1:]
-    return '\n' + '\n'.join(paragraphs)
-
-
-def login_with_key(bot, debug, api_key):
-    # Just for debug
-    print('===>logging in')
-    if debug:
-        bot.init_agent()
-        return gr.update(visible=True), gr.update(visible=False), gr.update(visible=False, value='')
-    else:
-        import openai
-        from langchain.llms.openai import OpenAI
-        if api_key and len(api_key) > 30:
-            os.environ["OPENAI_API_KEY"] = api_key
-            openai.api_key = api_key
-            try:
-                llm = OpenAI(temperature=0)
-                llm('Hi!')
-                response = 'Success!'
-                is_error = False
-                bot.init_agent()
-            except:
-                # gr.update(visible=True)
-                response = 'Incorrect key, please input again'
-                is_error = True
-        else:
-            is_error = True
-            response = 'Incorrect key, please input again'
-        
-        return gr.update(visible=not is_error), gr.update(visible=is_error), gr.update(visible=is_error, value=response)
 
 
 class InstructPix2Pix:
@@ -292,7 +249,6 @@ class CannyText2Image:
             torch_dtype=self.torch_dtype)
         self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
         self.pipe.to(device)
-        self.seed = -1
         self.a_prompt = 'best quality, extremely detailed'
         self.n_prompt = 'longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, ' \
                             'fewer digits, cropped, worst quality, low quality'
@@ -306,13 +262,15 @@ class CannyText2Image:
     def inference(self, inputs):
         image_path, instruct_text = inputs.split(",")[0], ','.join(inputs.split(',')[1:])
         image = Image.open(image_path)
-        self.seed = random.randint(0, 65535)
-        seed_everything(self.seed)
+        w, h = image.size
+        image = resize_800(image)
+        seed_everything(GLOBAL_SEED)
         prompt = f'{instruct_text}, {self.a_prompt}'
         image = self.pipe(prompt, image, num_inference_steps=20, eta=0.0, negative_prompt=self.n_prompt,
                           guidance_scale=9.0).images[0]
         # updated_image_path = get_new_image_name(image_path, func_name="canny2image")
         updated_image_path = gen_new_name(image_path, f'{type(self).__name__}')
+        image = image.resize((w, h))
         image.save(updated_image_path)
         print(f"\nProcessed CannyText2Image, Input Canny: {image_path}, Input Text: {instruct_text}, "
               f"Output Text: {updated_image_path}")
@@ -351,7 +309,6 @@ class LineText2Image:
         )
         self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
         self.pipe.to(device)
-        self.seed = -1
         self.a_prompt = 'best quality, extremely detailed'
         self.n_prompt = 'longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, ' \
                             'fewer digits, cropped, worst quality, low quality'
@@ -366,13 +323,15 @@ class LineText2Image:
     def inference(self, inputs):
         image_path, instruct_text = inputs.split(",")[0], ','.join(inputs.split(',')[1:])
         image = Image.open(image_path)
-        self.seed = random.randint(0, 65535)
-        seed_everything(self.seed)
+        w, h = image.size
+        image = resize_800(image)
+        seed_everything(GLOBAL_SEED)
         prompt = f'{instruct_text}, {self.a_prompt}'
         image = self.pipe(prompt, image, num_inference_steps=20, eta=0.0, negative_prompt=self.n_prompt,
                           guidance_scale=9.0).images[0]
         # updated_image_path = get_new_image_name(image_path, func_name="line2image")
         updated_image_path = gen_new_name(image_path, f'{type(self).__name__}')
+        image = image.resize((w, h))
         image.save(updated_image_path)
         print(f"\nProcessed LineText2Image, Input Line: {image_path}, Input Text: {instruct_text}, "
               f"Output Text: {updated_image_path}")
@@ -411,7 +370,6 @@ class HedText2Image:
         )
         self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
         self.pipe.to(device)
-        self.seed = -1
         self.a_prompt = 'best quality, extremely detailed'
         self.n_prompt = 'longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, ' \
                             'fewer digits, cropped, worst quality, low quality'
@@ -426,13 +384,15 @@ class HedText2Image:
     def inference(self, inputs):
         image_path, instruct_text = inputs.split(",")[0], ','.join(inputs.split(',')[1:])
         image = Image.open(image_path)
-        self.seed = random.randint(0, 65535)
-        seed_everything(self.seed)
+        w, h = image.size
+        image = resize_800(image)
+        seed_everything(GLOBAL_SEED)
         prompt = f'{instruct_text}, {self.a_prompt}'
         image = self.pipe(prompt, image, num_inference_steps=20, eta=0.0, negative_prompt=self.n_prompt,
                           guidance_scale=9.0).images[0]
         # updated_image_path = get_new_image_name(image_path, func_name="hed2image")
         updated_image_path = gen_new_name(image_path, f'{type(self).__name__}')
+        image = image.resize((w, h))
         image.save(updated_image_path)
         print(f"\nProcessed HedText2Image, Input Hed: {image_path}, Input Text: {instruct_text}, "
               f"Output Image: {updated_image_path}")
@@ -471,7 +431,6 @@ class ScribbleText2Image:
         )
         self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
         self.pipe.to(device)
-        self.seed = -1
         self.a_prompt = 'best quality, extremely detailed'
         self.n_prompt = 'longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, ' \
                             'fewer digits, cropped, worst quality, low quality'
@@ -484,12 +443,15 @@ class ScribbleText2Image:
     def inference(self, inputs):
         image_path, instruct_text = inputs.split(",")[0], ','.join(inputs.split(',')[1:])
         image = Image.open(image_path)
+        w, h = image.size
+        image = resize_800(image)
         seed_everything(GLOBAL_SEED)
         prompt = f'{instruct_text}, {self.a_prompt}'
         image = self.pipe(prompt, image, num_inference_steps=20, eta=0.0, negative_prompt=self.n_prompt,
                           guidance_scale=9.0).images[0]
         # updated_image_path = get_new_image_name(image_path, func_name="scribble2image")
         updated_image_path = gen_new_name(image_path, f'{type(self).__name__}')
+        image = image.resize((w, h))
         image.save(updated_image_path)
         print(f"\nProcessed ScribbleText2Image, Input Scribble: {image_path}, Input Text: {instruct_text}, "
               f"Output Image: {updated_image_path}")
@@ -527,7 +489,6 @@ class PoseText2Image:
         self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
         self.pipe.to(device)
         self.num_inference_steps = 20
-        self.seed = -1
         self.unconditional_guidance_scale = 9.0
         self.a_prompt = 'best quality, extremely detailed'
         self.n_prompt = 'longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit,' \
@@ -543,13 +504,15 @@ class PoseText2Image:
     def inference(self, inputs):
         image_path, instruct_text = inputs.split(",")[0], ','.join(inputs.split(',')[1:])
         image = Image.open(image_path)
-        self.seed = random.randint(0, 65535)
-        seed_everything(self.seed)
+        w, h = image.size
+        image = resize_800(image)
+        seed_everything(GLOBAL_SEED)
         prompt = f'{instruct_text}, {self.a_prompt}'
         image = self.pipe(prompt, image, num_inference_steps=20, eta=0.0, negative_prompt=self.n_prompt,
                           guidance_scale=9.0).images[0]
         # updated_image_path = get_new_image_name(image_path, func_name="pose2image")
         updated_image_path = gen_new_name(image_path, f'{type(self).__name__}')
+        image = image.resize((w, h))
         image.save(updated_image_path)
         print(f"\nProcessed PoseText2Image, Input Pose: {image_path}, Input Text: {instruct_text}, "
               f"Output Image: {updated_image_path}")
@@ -567,7 +530,6 @@ class SegText2Image:
             torch_dtype=self.torch_dtype)
         self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
         self.pipe.to(device)
-        self.seed = -1
         self.a_prompt = 'best quality, extremely detailed'
         self.n_prompt = 'longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit,' \
                             ' fewer digits, cropped, worst quality, low quality'
@@ -581,13 +543,15 @@ class SegText2Image:
     def inference(self, inputs):
         image_path, instruct_text = inputs.split(",")[0], ','.join(inputs.split(',')[1:])
         image = Image.open(image_path)
-        self.seed = random.randint(0, 65535)
-        seed_everything(self.seed)
+        w, h = image.size
+        image = resize_800(image)
+        seed_everything(GLOBAL_SEED)
         prompt = f'{instruct_text}, {self.a_prompt}'
         image = self.pipe(prompt, image, num_inference_steps=20, eta=0.0, negative_prompt=self.n_prompt,
                           guidance_scale=9.0).images[0]
         # updated_image_path = get_new_image_name(image_path, func_name="segment2image")
         updated_image_path = gen_new_name(image_path, f'{type(self).__name__}')
+        image = image.resize((w, h))
         image.save(updated_image_path)
         print(f"\nProcessed SegText2Image, Input Seg: {image_path}, Input Text: {instruct_text}, "
               f"Output Image: {updated_image_path}")
@@ -602,7 +566,6 @@ class ImageText2Image:
         # self.torch_dtype = torch.float16 if 'cuda' in device else torch.float32
         self.SegText2Image = SegText2Image
         self.SegmentAnything = SegmentAnything
-        self.seed = -1
         self.a_prompt = 'best quality, extremely detailed'
         self.n_prompt = 'longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit,' \
                             ' fewer digits, cropped, worst quality, low quality'
@@ -658,7 +621,6 @@ class DepthText2Image:
             torch_dtype=self.torch_dtype)
         self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
         self.pipe.to(device)
-        self.seed = -1
         self.a_prompt = 'best quality, extremely detailed'
         self.n_prompt = 'longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit,' \
                             ' fewer digits, cropped, worst quality, low quality'
@@ -672,13 +634,15 @@ class DepthText2Image:
     def inference(self, inputs):
         image_path, instruct_text = inputs.split(",")[0], ','.join(inputs.split(',')[1:])
         image = Image.open(image_path)
-        self.seed = random.randint(0, 65535)
-        seed_everything(self.seed)
+        w, h = image.size
+        image = resize_800(image)
+        seed_everything(GLOBAL_SEED)
         prompt = f'{instruct_text}, {self.a_prompt}'
         image = self.pipe(prompt, image, num_inference_steps=20, eta=0.0, negative_prompt=self.n_prompt,
                           guidance_scale=9.0).images[0]
         # updated_image_path = get_new_image_name(image_path, func_name="depth2image")
         updated_image_path = gen_new_name(image_path, f'{type(self).__name__}')
+        image = image.resize((w, h))
         image.save(updated_image_path)
         print(f"\nProcessed DepthText2Image, Input Depth: {image_path}, Input Text: {instruct_text}, "
               f"Output Image: {updated_image_path}")
@@ -731,7 +695,6 @@ class NormalText2Image:
             torch_dtype=self.torch_dtype)
         self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
         self.pipe.to(device)
-        self.seed = -1
         self.a_prompt = 'best quality, extremely detailed'
         self.n_prompt = 'longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit,' \
                             ' fewer digits, cropped, worst quality, low quality'
@@ -868,23 +831,22 @@ class SegmentAnything:
         self.sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
         self.predictor = SamPredictor(self.sam)
         self.sam.to(device=device)
-        self.clicked_region = None
-        self.img_path = None
-        self.history_mask_res = None
+        # self.clicked_region = None
+        # self.img_path = None
+        # self.history_mask_res = None
 
     @prompts(name="Segment Anything on Image",
              description="useful when you want to segment anything in the image. "
                          "like: segment anything from this image, "
-                         "The input to this tool should be a string, representing the image_path")             
+                         "The input to this tool should be a string, "
+                         "representing the image_path.")             
     def inference(self, inputs):
         print("Inputs: ", inputs)
+
         img_path = inputs.strip()
-        self.img_path = img_path
-        annos = self.segment_anything(img_path)
+        img = np.array(Image.open(img_path))
+        annos = self.segment_anything(img)
         full_img, _ = self.show_annos(annos)
-        # full_img = Image.fromarray(full_img)
-        # res = Image.fromarray(res)
-        # print(os.path.splitext(img_path))
         seg_all_image_path = gen_new_name(img_path, 'seg')
         full_img.save(seg_all_image_path, "PNG")
 
@@ -894,27 +856,25 @@ class SegmentAnything:
     @prompts(name="Segment the Clicked Region in the Image",
              description="useful when you want to segment the masked region or block in the image. "
                          "like: segment the masked region in this image, "
-                         "The input to this tool should be None.")        
-    def inference_by_mask(self, inputs=None):
+                         "The input to this tool should be a comma separated string of two, "
+                         "representing the image_path and the mask_path")        
+    def inference_by_mask(self, inputs):
+        img_path, mask_path = inputs.split(',')[0], inputs.split(',')[1]
+        img_path = img_path.strip()
+        mask_path = mask_path.strip()
+        clicked_mask = Image.open(mask_path).convert('L')
+        clicked_mask = np.array(clicked_mask, dtype=np.uint8)
         # mask = np.array(Image.open(mask_path).convert('L'))
-        res_mask = self.segment_by_mask(self.clicked_region)
+        res_mask = self.segment_by_mask(clicked_mask)
         
-        if self.history_mask_res is None:
-            self.history_mask_res = res_mask
-        else:
-            self.history_mask_res = np.logical_or(self.history_mask_res, res_mask)
-            
-        res_mask = self.history_mask_res.astype(np.uint8)*255
-        # res_mask = self.dilate_mask(res_mask)
+        res_mask = res_mask.astype(np.uint8)*255
         filaname = gen_new_name(self.img_path, 'mask')
         mask_img = Image.fromarray(res_mask)
         mask_img.save(filaname, "PNG")
         return filaname
     
-    def segment_by_mask(self, mask=None):
+    def segment_by_mask(self, mask, features):
         random.seed(GLOBAL_SEED)
-        if mask is None:
-            mask = self.clicked_region 
         idxs = np.nonzero(mask)
         num_points = min(max(1, int(len(idxs[0]) * 0.01)), 16)
         sampled_idx = random.sample(range(0, len(idxs[0])), num_points)
@@ -925,6 +885,7 @@ class SegmentAnything:
         labels = np.array([1] * num_points)
 
         res_masks, scores, _ = self.predictor.predict(
+            features=features,
             point_coords=points,
             point_labels=labels,
             multimask_output=True,
@@ -933,10 +894,9 @@ class SegmentAnything:
         return res_masks[np.argmax(scores), :, :]
 
 
-    def segment_anything(self, img_path):
-        img = cv2.imread(img_path)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        
+    def segment_anything(self, img):
+        # img = cv2.imread(img_path)
+        # img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         mask_generator = SamAutomaticMaskGenerator(self.sam)
         annos = mask_generator.generate(img)
         return annos
@@ -947,16 +907,9 @@ class SegmentAnything:
 
         return detection_map
 
-    def preprocess(self, img, img_path):
-        self.predictor.set_image(img)
-        self.img_path = img_path
+    def get_image_embedding(self, img):
+        return self.predictor.set_image(img)
 
-    def reset(self):
-        self.predictor.reset_image()
-        self.clicked_region = None
-        self.img_path = None
-        self.history_mask_res = None
-    
     def show_annos(self, anns):
         # From https://github.com/sail-sg/EditAnything/blob/main/sam2image.py#L91
         if len(anns) == 0:
@@ -1078,30 +1031,37 @@ class ImageOCRRecognition:
         print(f"Initializing ImageOCRRecognition to {device}")
         self.device = device
         self.reader = easyocr.Reader(['ch_sim', 'en'], gpu=device) # this needs to run only once to load the model into memory
-        self.result = None
-        self.image_path=None
-        self.clicked_region = None
-    
+
     @prompts(name="recognize the optical characters in the image",
              description="useful when you want to recognize the characters or words in the clicked region of image. "
                          "like: recognize the characters or words in the clicked region."
                          "The input to this tool should be a comma separated string of two, "
-                         "The input to this tool should be None.")
+                         "representing the image_path and the mask_path")
     def inference_by_mask(self, inputs=None):
-        mask = self.clicked_region
+        image_path, mask_path = inputs.split(',')[0], inputs.split(',')[1]
+        image_path = image_path.strip()
+        mask_path = mask_path.strip()
+        mask = Image.open(mask_path).convert('L')
+        mask = np.array(mask, dtype=np.uint8)
+        ocr_res = self.readtext(image_path)
+        seleted_ocr_text = self.get_ocr_by_mask(mask, ocr_res)
+        print(
+            f"\nProcessed ImageOCRRecognition, Input Image: {inputs}, "
+            f"Output Text: {seleted_ocr_text}.")
+        return seleted_ocr_text
+
+    def get_ocr_by_mask(self, mask, ocr_res):
         inds =np.where(mask != 0)
         inds = (inds[0][::8], inds[1][::8])
-
-        if self.image_path is None or len(inds[0]) == 0:
+        # self.result = self.reader.readtext(self.image_path)
+        if len(inds[0]) == 0:
             # self.result = self.reader.readtext(image_path)
             return 'No characters in the image'
 
-        # stat = [100, 595] # todo
-        
         # reader = easyocr.Reader(['ch_sim', 'en', 'fr', 'it', 'ja', 'ko', 'ru', 'de', 'pt']) # this needs to run only once to load the model into memory
         ocr_text_list = []
         for i in range(len(inds[0])):
-            res = self.search((inds[1][i], inds[0][i]))
+            res = self.search((inds[1][i], inds[0][i]), ocr_res)
             if res is not None and len(res) > 0:
                 ocr_text_list.append(res)
         ocr_text_list = list(dict.fromkeys(ocr_text_list))
@@ -1110,10 +1070,7 @@ class ImageOCRRecognition:
             ocr_text = 'No characters in the image'
         else:
             ocr_text = '\n' + ocr_text
-
-        print(
-            f"\nProcessed ImageOCRRecognition, Input Image: {self.image_path}, "
-            f"Output Text: {ocr_text}.")
+        
         return ocr_text
 
     @prompts(name="recognize all optical characters in the image",
@@ -1123,25 +1080,26 @@ class ImageOCRRecognition:
                          "representing the image_path.")
     def inference(self, inputs):
         image_path = inputs.strip()
-        if self.image_path != image_path:
-            self.result = self.reader.readtext(image_path)
-            self.image_path = image_path
+        result = self.reader.readtext(image_path)
         # print(self.result)
         res_text = []
-        for item in self.result:
+        for item in result:
             # ([[x, y], [x, y], [x, y], [x, y]], text, confidence)
             res_text.append(item[1])
         print(
-            f"\nProcessed ImageOCRRecognition, Input Image: {self.image_path}, "
+            f"\nProcessed ImageOCRRecognition, Input Image: {inputs}, "
             f"Output Text: {res_text}")
         return res_text
     
-    def preprocess(self, img, img_path):
-        self.image_path = img_path
-        self.result = self.reader.readtext(self.image_path)
+    # def preprocess(self, img, img_path):
+        # self.image_path = img_path
+        # self.result = self.reader.readtext(self.image_path)
+    
+    def readtext(self, img_path):
+        return self.reader.readtext(img_path)
 
-    def search(self, coord):
-        for item in self.result:
+    def search(self, coord, orc_res):
+        for item in orc_res:
             left_top = item[0][0]
             right_bottom=item[0][-2]
             if (coord[0] >= left_top[0] and coord[1] >= left_top[1]) and \
@@ -1150,25 +1108,20 @@ class ImageOCRRecognition:
 
         return ''
 
-    def reset(self):
-        self.image_path = None
-        self.result = None
-        self.mask = None
 
 
 class ConversationBot:
     def __init__(self, load_dict):
-        # load_dict = {'VisualQuestionAnswering':'cuda:0', 'ImageCaptioning':'cuda:1',...}
-        print(f"Initializing VisualChatGPT, load_dict={load_dict}")
+        print(f"Initializing InternGPT, load_dict={load_dict}")
         if 'HuskyVQA' not in load_dict:
-            raise ValueError("You have to load ImageCaptioning as a basic function for i-GPT")
+            raise ValueError("You have to load ImageCaptioning as a basic function for iGPT")
         if 'SegmentAnything' not in load_dict:
-            raise ValueError("You have to load SegmentAnything as a basic function for i-GPT")
+            raise ValueError("You have to load SegmentAnything as a basic function for iGPT")
+        if 'ImageOCRRecognition' not in load_dict:
+            raise ValueError("You have to load ImageOCRRecognition as a basic function for iGPT")
 
         self.models = {}
-        self.uploaded_image_filename = None
-        # self.segmented_image_filename = None
-        self.history_mask = None
+        self.audio_model = whisper.load_model("small").to('cuda:0')
         # Load Basic Foundation Models
         for class_name, device in load_dict.items():
             self.models[class_name] = globals()[class_name](device=device)
@@ -1187,27 +1140,7 @@ class ConversationBot:
                 if e.startswith('inference'):
                     func = getattr(instance, e)
                     self.tools.append(Tool(name=func.name, description=func.description, func=func))
-        self.llm = None
-        self.memory = None
-        self.audio_model = None
 
-    def init_agent(self):
-        if self.memory is not None:
-            self.memory.clear() #clear previous history
-        else:
-            self.memory = ConversationBufferMemory(memory_key="chat_history", output_key='output')
-        
-        self.reset()
-        self.llm = OpenAI(temperature=0)
-        self.agent = initialize_agent(
-            self.tools,
-            self.llm,
-            agent="conversational-react-description",
-            verbose=True,
-            memory=self.memory,
-            return_intermediate_steps=True,
-            agent_kwargs={'prefix': INTERN_CHAT_PREFIX, 'format_instructions': INTERN_CHAT_FORMAT_INSTRUCTIONS,
-                          'suffix': INTERN_CHAT_SUFFIX}, )
     
     def find_latest_image(self, file_list):
         res = None
@@ -1231,12 +1164,12 @@ class ConversationBot:
                     res = file_item[0]
         return res
 
-    def run_task(self, use_voice, text, audio_path, state):
+    def run_task(self, use_voice, text, audio_path, state, user_state):
         if use_voice:
-            state, _ = self.run_audio(audio_path, state)
+            state, _, user_state = self.run_audio(audio_path, state, user_state)
         else:
-            state, _ = self.run_text(text, state)
-        return state, state, None
+            state, _, user_state = self.run_text(text, state, user_state)
+        return state, state, user_state
 
     def find_param(self, msg, keyword, excluded=False):
         p1 = re.compile(f'(image/[-\\w]*.(png|mp4))')
@@ -1253,8 +1186,7 @@ class ConversationBot:
         res = self.find_latest_image(out_filenames)
         return res
 
-    def rectify_action(self, inputs, history_msg):
-        # history_msg = self.agent.memory.buffer.copy()
+    def rectify_action(self, inputs, history_msg, user_state):
         print('Rectify the action.')
         print(inputs)
         func = None
@@ -1316,7 +1248,7 @@ class ConversationBot:
             func_inputs = f'{img_path},{prompt}'
         else:
             # raise NotImplementedError('Can not find the matched function.')
-            res = self.agent(f"You can use history message to sanswer this question without using any tools. {inputs}")
+            res = user_state[0]['agent'](f"You can use history message to sanswer this question without using any tools. {inputs}")
             res = res['output'].replace("\\", "/")
 
         print(f'{func_name}: {func_inputs}')
@@ -1340,17 +1272,14 @@ class ConversationBot:
 
         return illegal_files
         
-    def run_text(self, text, state):
+    def run_text(self, text, state, user_state):
         if text is None or len(text) == 0:
             state += [(None, 'Please input text.')]
-            return state, state
-        self.agent.memory.buffer = cut_dialogue_history(self.agent.memory.buffer, keep_last_n_words=500)
+            return state, state, user_state
+        user_state[0]['agent'].memory.buffer = cut_dialogue_history(user_state[0]['agent'].memory.buffer, keep_last_n_words=500)
         pattern = re.compile('(image/[-\\w]*.(png|mp4))')
         try:
-            # new_text = text.strip() + 'You can find all input paths in the history.'
-            # res = self.agent({"input": new_text})
-            response = self.agent({"input": text.strip()})['output']
-            # print(f'*******response*********: {response}')
+            response = user_state[0]['agent']({"input": text.strip()})['output']
             response = response.replace("\\", "/")
             out_filenames = pattern.findall(response)
             illegal_files = self.check_illegal_files(out_filenames)
@@ -1361,29 +1290,29 @@ class ConversationBot:
             # state += [(text, 'Sorry, I failed to understand your instruction. You can try it again or turn to more powerful language model.')]
             print(f'Error: {err1}')
             try:
-                response = self.rectify_action(text, self.agent.memory.buffer[:])
+                response = self.rectify_action(text, user_state[0]['agent'].memory.buffer[:], user_state)
                 # print('response = ', response)
                 out_filenames = pattern.findall(response)
                 res = self.find_latest_image(out_filenames)
                 # print(out_filenames)
-                self.agent.memory.buffer += f'\nHuman: {text.strip()}\n' + f'AI:{response})'
+                user_state[0]['agent'].memory.buffer += f'\nHuman: {text.strip()}\n' + f'AI:{response})'
 
             except Exception as err2:
                 print(f'Error: {err2}')
                 state += [(text, 'Sorry, I failed to understand your instruction. You can try it again or turn to more powerful language model.')]
-                return state, state
+                return state, state, user_state
 
-        if res is not None and self.agent.memory.buffer.count(res) <= 1:
+        if res is not None and user_state[0]['agent'].memory.buffer.count(res) <= 1:
             state = state + [(text, response + f' `{res}` is as follows: ')]
             state = state + [(None, (res, ))]
         else:
             state = state + [(text, response)]
             
         print(f"\nProcessed run_text, Input text: {text}\nCurrent state: {state}\n"
-              f"Current Memory: {self.agent.memory.buffer}")
-        return state, state
+              f"Current Memory: {user_state[0]['agent'].memory.buffer}")
+        return state, state, user_state
     
-    def run_audio(self, audio_path, state):
+    def run_audio(self, audio_path, state, user_state):
         print(f'audio_path = {audio_path}')
         if audio_path is None or not os.path.exists(audio_path):
             state += [(None, 'No audio input. Please stop recording first and then send the audio.')]
@@ -1391,68 +1320,74 @@ class ConversationBot:
         if self.audio_model is None:
             self.audio_model = whisper.load_model("small").to('cuda:0')
         text = self.audio_model.transcribe(audio_path)["text"]
-        res = self.run_text(text, state)
+        res = self.run_text(text, state, user_state)
         print(f"\nProcessed run_audio, Input transcribed audio: {text}\nCurrent state: {state}\n"
-              f"Current Memory: {self.agent.memory.buffer}")
-        return res[0], res[1]
+              f"Current Memory: {user_state[0]['agent'].memory.buffer}")
+        return res[0], res[1], res[2]
 
-    def upload_image(self, image, state, txt):
-        self.reset()
+    def upload_image(self, image, state, user_state):
+        # [txt, click_img, state, user_state], [chatbot, txt, state, user_state]
+        # self.reset()
         print('upload an image')
+        user_state = self.clear_user_state(False, user_state)
         img = image['image']
         image_filename = os.path.join('image', f"{str(uuid.uuid4())[:6]}.png")
-        image_filename = gen_new_name(image_filename, 'raw')
-        self.uploaded_image_filename = image_filename
-        img = img.convert('RGB')
+        image_filename = gen_new_name(image_filename, 'image')
         img.save(image_filename, "PNG")
-        # print(f"Resize image form {width}x{height} to {width_new}x{height_new}")
-        # let some foundation models preprocess image
-        NEED_PREPROCESSING_LIST = ["SegmentAnything", "ImageOCRRecognition"]
-        for model_name in NEED_PREPROCESSING_LIST:
-            if model_name in self.models.keys():
-                 self.models[model_name].preprocess(np.array(img), image_filename)
-        # description = self.models['ImageCaptioning'].inference(image_filename)
-        description = self.models['HuskyVQA'].inference_captioning(image_filename)
+        # self.uploaded_image_filename = image_filename
+        user_state[0]['image_path'] = image_filename
+        img = img.convert('RGB')
+
+        image_caption = self.models['HuskyVQA'].inference_captioning(image_filename)
         # description = 'Debug'
+        user_state[0]['image_caption'] = image_caption
 
-        ocr_text = None
+        ocr_res = None
+        user_state[0]['ocr_res'] = []
         if 'ImageOCRRecognition' in self.models.keys():
-            ocr_text = self.models['ImageOCRRecognition'].inference(image_filename)
-
-        if ocr_text is not None and len(ocr_text) > 0:
-            Human_prompt = f'\nHuman: provide a image named {image_filename}. The description is: {description}. OCR result is: {ocr_text}. This information helps you to understand this image, but you should use tools to finish following tasks, rather than directly imagine from my description. If you understand, say \"Received\". \n'
+            ocr_res = self.models['ImageOCRRecognition'].inference(image_filename)
+            ocr_res_raw = self.models['ImageOCRRecognition'].readtext(image_filename)
+        if ocr_res is not None and len(ocr_res) > 0:
+            Human_prompt = f'\nHuman: provide a image named {image_filename}. The description is: {image_caption} OCR result is: {ocr_res}. This information helps you to understand this image, but you should use tools to finish following tasks, rather than directly imagine from my description. If you understand, say \"Received\". \n'
+            user_state[0]['ocr_res'] = ocr_res_raw
         else:
-            Human_prompt = f'\nHuman: provide a image named {image_filename}. The description is: {description}. This information helps you to understand this image, but you should use tools to finish following tasks, rather than directly imagine from my description. If you understand, say \"Received\". \n'
+            Human_prompt = f'\nHuman: provide a image named {image_filename}. The description is: {image_caption} This information helps you to understand this image, but you should use tools to finish following tasks, rather than directly imagine from my description. If you understand, say \"Received\". \n'
         AI_prompt = "Received.  "
-        self.agent.memory.buffer = self.agent.memory.buffer + Human_prompt + ' AI: ' + AI_prompt
+        # self.agent.memory.buffer = self.agent.memory.buffer + Human_prompt + ' AI: ' + AI_prompt
+        user_state[0]['agent'].memory.buffer += Human_prompt + 'AI: ' + AI_prompt
         state = state + [(f"![](file={image_filename})*{image_filename}*", AI_prompt)]
         print(f"\nProcessed upload_image, Input image: {image_filename}\nCurrent state: {state}\n"
-              f"Current Memory: {self.agent.memory.buffer}")
-        return state, state, f'{txt}'
+              f"Current Memory: {user_state[0]['agent'].memory.buffer}")
 
-    def upload_video(self, video_path, state, txt):
-        self.reset()
+        return state, state, user_state
+
+    def upload_video(self, video_path, state, user_state):
+        # self.reset()
         print('upload a video')
+        user_state = self.clear_user_state(False, user_state)
         vid_name = os.path.basename(video_path)
         # vid_name = gen_new_name(vid_name, '', vid_name.split('.')[-1])
         new_video_path = os.path.join('./image/', vid_name)
-        new_video_path = gen_new_name(new_video_path, 'raw', vid_name.split('.')[-1])
+        new_video_path = gen_new_name(new_video_path, 'image', vid_name.split('.')[-1])
         shutil.copy(video_path, new_video_path)
 
+        user_state[0]['video_path'] = new_video_path
         if "VideoCaption" in self.models.keys():
             description = self.models['VideoCaption'].inference(new_video_path)
         else:
             description = 'A video.'
+        user_state[0]['video_caption'] = description
         Human_prompt = f'\nHuman: provide a video named {new_video_path}. The description is: {description}. This information helps you to understand this video, but you should use tools to finish following tasks, rather than directly imagine from my description. If you understand, say \"Received\". \n'
         AI_prompt = f"Received video: {new_video_path} "
-        self.agent.memory.buffer = self.agent.memory.buffer + Human_prompt + 'AI: ' + AI_prompt
-        # state = state + [(f"![](file={new_video_path})*{new_video_path}*", AI_prompt)]
-        # state = state + [(f"![](file={video_path})*{new_video_path}*", AI_prompt)]
+        # self.agent.memory.buffer = self.agent.memory.buffer + Human_prompt + 'AI: ' + AI_prompt
+        user_state[0]['agent'].memory.buffer += Human_prompt + 'AI: ' + AI_prompt
+
         state = state + [((new_video_path, ), AI_prompt)]
         # print('exists = ', os.path.exists("./tmp_files/1e7f_f4236666_tmp.mp4"))
         print(f"\nProcessed upload_video, Input video: `{new_video_path}`\nCurrent state: {state}\n"
-              f"Current Memory: {self.agent.memory.buffer}")
-        return state, state, f'{txt}'
+              f"Current Memory: {user_state[0]['agent'].memory.buffer}")
+
+        return state, state, user_state
 
     def blend_mask(self, img, mask):
         mask = mask.astype(np.uint8)
@@ -1468,63 +1403,67 @@ class ConversationBot:
         # print(new_img_arr.shape)
         return new_img_arr
 
-    def process_seg(self, image, state):
-        if self.uploaded_image_filename is None or \
-            not os.path.exists(self.uploaded_image_filename) or \
-                image is None:
-            return state, state, None
+    def process_seg(self, image, state, user_state):
+        Human_prompt="Please process this image based on given mask."
+        if image is None or \
+            user_state[0].get('image_path', None) is None or \
+                not os.path.exists(user_state[0]['image_path']):
+            AI_prompt = "Please upload an image for processing."
+            state += [(Human_prompt, AI_prompt)]
+            return None, state, state, user_state
         
         if 'SegmentAnything' not in self.models.keys():
             state += [(None, 'Please load the segmentation tool.')]
-            return state, state, image
+            return image['image'], state, state, user_state
 
-        img = Image.open(self.uploaded_image_filename).convert('RGB')
-        # img = image['image'].convert('RGB')
+        img = Image.open(user_state[0]['image_path']).convert('RGB')
+        print(f'user_state[0][\'image_path\'] = {user_state[0]["image_path"]}')
+        img = np.array(img, dtype=np.uint8)
         mask = image['mask'].convert('L')
         mask = np.array(mask, dtype=np.uint8)
-
-        Human_prompt="Please process this image based on given mask."
-        if self.uploaded_image_filename is None:
-            AI_prompt = "Please upload an image for processing."
-            state += [(Human_prompt, AI_prompt)]
-            return state, state, None
-        if mask.sum() == 0:
-            AI_prompt = "You can click the image in the right and ask me some questions."
-            state += [(Human_prompt, AI_prompt)]
-            return state, state, image['image']
         
-        if 'SegmentAnything' in self.models.keys():
-            self.models['SegmentAnything'].clicked_region = mask
+        if mask.sum() == 0:
+            AI_prompt = "You can click the image and ask me some questions."
+            state += [(Human_prompt, AI_prompt)]
+            return image['image'], state, state, user_state
+        
+        # if 'SegmentAnything' in self.models.keys():
+        #     self.models['SegmentAnything'].clicked_region = mask
+        if user_state[0].get('features', None) is None:
+            user_state[0]['features'] = self.models['SegmentAnything'].get_image_embedding(img)
 
-        res_mask_path = self.models['SegmentAnything'].inference_by_mask()
-        res_mask = Image.open(res_mask_path)
-        res_mask_arr = np.array(res_mask, dtype=np.uint8)
-        # dilate_factor = self.models['SegmentAnything'].cal_dilate_factor(res_mask_arr)
-        # res_mask_arr = self.models['SegmentAnything'].dilate_mask(res_mask_arr, dilate_factor)
-        new_img_arr = self.blend_mask(img, res_mask_arr)
+        res_mask = self.models['SegmentAnything'].segment_by_mask(mask, user_state[0]['features'])
+
+        if user_state[0].get('seg_mask', None) is not None:
+            res_mask = np.logical_or(user_state[0]['seg_mask'], res_mask)
+        
+        res_mask = res_mask.astype(np.uint8)*255
+        user_state[0]['seg_mask'] = res_mask
+        new_img_arr = self.blend_mask(img, res_mask)
         new_img = Image.fromarray(new_img_arr)
-        new_img_name = gen_new_name(self.uploaded_image_filename, 'blended')
-        print(new_img_name)
-        new_img.save(new_img_name)
-        # AI_prompt = f"I have finished processing. Now, you can ask me some questions."
-        # state = state + [(Human_prompt, AI_prompt)]
+        res_mask_img = Image.fromarray(res_mask).convert('RGB')
+        res_mask_path = gen_new_name(user_state[0]['image_path'], 'mask')
+        res_mask_img.save(res_mask_path)
         AI_prompt = f"Received. The mask_path is named {res_mask_path}."
-        self.agent.memory.buffer = self.agent.memory.buffer + '\nHuman: ' + Human_prompt + ' AI: ' + AI_prompt
+        user_state[0]['agent'].memory.buffer += '\nHuman: ' + Human_prompt + '\nAI: ' + AI_prompt
         # state = state + [(Human_prompt, f"![](file={seg_filename})*{AI_prompt}*")]
         state = state + [(Human_prompt, f'Received. The sgemented figure named `{res_mask_path}` is as follows: ')]
         state = state + [(None, (res_mask_path, ))]
         
-        print(f"\nProcessed run_image, Input image: `{self.uploaded_image_filename}`\nCurrent state: {state}\n"
-              f"Current Memory: {self.agent.memory.buffer}")
-        return state, state, new_img
+        print(f"\nProcessed run_image, Input image: `{user_state[0]['image_path']}`\nCurrent state: {state}\n"
+              f"Current Memory: {user_state[0]['agent'].memory.buffer}")
+        return new_img, state, state, user_state
 
-    def process_ocr(self, image, state):
-        if self.uploaded_image_filename is None or \
-            not os.path.exists(self.uploaded_image_filename) or \
-                image is None:
-            return state, state, None
-        img = Image.open(self.uploaded_image_filename).convert('RGB')
-        img = np.array(img)
+    def process_ocr(self, image, state, user_state):
+        Human_prompt="Please process this image based on given mask."
+        if image is None or \
+            user_state[0].get('image_path', None) is None or \
+                not os.path.exists(user_state[0]['image_path']):
+            AI_prompt = "Please upload an image for processing."
+            state += [(Human_prompt, AI_prompt)]
+            return None, state, state, user_state
+
+        img = np.array(image['image'])
         # img[:100+int(time.time() % 50),:100, :] = 0 
         img = Image.fromarray(img)
         # img = image['image'].convert('RGB')
@@ -1532,38 +1471,33 @@ class ConversationBot:
         # mask.save(f'test_{int(time.time()) % 1000}.png')
         mask = np.array(mask, dtype=np.uint8)
 
-        Human_prompt="Please process this image based on given mask."
-        if self.uploaded_image_filename is None:
-            AI_prompt = "Please upload an image for processing."
-            state += [(Human_prompt, AI_prompt)]
-            return state, state, None
         if mask.sum() == 0:
-            AI_prompt = "You can click the image in the right and ask me some questions."
+            AI_prompt = "You can click the image and ask me some questions."
             state += [(Human_prompt, AI_prompt)]
-            return state, state, image['image']
+            return image['image'], state, state, user_state
         
-        ocr_text = None
+        chosen_ocr_res = None
         if 'ImageOCRRecognition' in self.models.keys():
-            self.models['ImageOCRRecognition'].clicked_region = mask
-            ocr_text = self.models['ImageOCRRecognition'].inference_by_mask()
+            # self.models['ImageOCRRecognition'].clicked_region = mask
+            chosen_ocr_res = self.models['ImageOCRRecognition'].get_ocr_by_mask(mask, user_state[0]['ocr_res'])
         else:
             state += [Human_prompt, f'ImageOCRRecognition is not loaded.']
 
-        if ocr_text is not None and len(ocr_text) > 0:
-            AI_prompt = f'OCR result: {ocr_text}'
+        if chosen_ocr_res is not None and len(chosen_ocr_res) > 0:
+            AI_prompt = f'OCR result: {chosen_ocr_res}'
             # self.agent.memory.buffer = self.agent.memory.buffer + Human_prompt + ' AI: ' + AI_prompt
         else:
             AI_prompt = 'I didn\'t find any optical characters at given location.'
         
         state = state + [(Human_prompt, AI_prompt)]
-        self.agent.memory.buffer = self.agent.memory.buffer + Human_prompt + ' AI: ' + AI_prompt
+        user_state[0]['agent'].memory.buffer += '\nHuman: ' + Human_prompt + '\nAI: ' + AI_prompt
         print(f"\nProcessed process_ocr, Input image: {self.uploaded_image_filename}\nCurrent state: {state}\n"
-              f"Current Memory: {self.agent.memory.buffer}")
-        return state, state, image['image']
+              f"Current Memory: {user_state[0]['agent'].memory.buffer}")
+        return image['image'], state, state, user_state
 
-    def process_save(self, image, state):
+    def process_save(self, image, state, user_state):
         if image is None:
-            return state, state, None
+            return None, state, state, user_state
         
         mask_image = image['mask'].convert('RGB')
         # mask = np.array(mask, dtype=np.uint8)
@@ -1580,72 +1514,22 @@ class ConversationBot:
         AI_prompt = f'The saved mask is named {mask_image_name}: '
         state = state + [(Human_prompt, AI_prompt)]
         state = state + [(None, (mask_image_name, ))]
-        self.agent.memory.buffer = self.agent.memory.buffer + Human_prompt + ' AI: ' + AI_prompt
+        user_state[0]['agent'].memory.buffer = user_state[0]['agent'].memory.buffer + Human_prompt + ' AI: ' + AI_prompt
         print(f"\nProcessed process_ocr, Input image: {self.uploaded_image_filename}\nCurrent state: {state}\n"
-              f"Current Memory: {self.agent.memory.buffer}")
-        return state, state, image['image']
+              f"Current Memory: {user_state[0]['agent'].memory.buffer}")
+        return image['image'], state, state, user_state
     
-    def process_image(self, image, state):
-        img = Image.open(self.uploaded_image_filename).convert('RGB')
-        # img = image['image'].convert('RGB')
-        mask = image['mask'].convert('L')
-        mask = np.array(mask, dtype=np.uint8)
 
-        Human_prompt="Please process this image based on given mask."
-        if self.uploaded_image_filename is None:
-            AI_prompt = "Please upload an image for processing."
-            state += [(Human_prompt, AI_prompt)]
-            return state, state, None
-        if mask.sum() == 0:
-            AI_prompt = "You can click the image in the right and ask me some questions."
-            state += [(Human_prompt, AI_prompt)]
-            return state, state, image['image']
-        
-        if self.history_mask is None:
-            self.history_mask = mask
+    def clear_user_state(self, clear_momery, user_state):
+        new_user_state = [{}]
+        new_user_state[0]['agent'] = user_state[0]['agent']
+        new_user_state[0]['memory'] = user_state[0]['memory']
+        if clear_momery:
+            new_user_state[0]['memory'].clear()
         else:
-            self.history_mask = np.logical_or(self.history_mask, mask)
-        
-        ocr_text = None
-        if 'SegmentAnything' in self.models.keys():
-            self.models['SegmentAnything'].clicked_region = self.history_mask
-        if 'ImageOCRRecognition' in self.models.keys():
-            self.models['ImageOCRRecognition'].clicked_region = mask
-            inds = np.where(mask != 0) 
-            coord = (int(np.mean(inds[1])), int(np.mean(inds[0])))
-            ocr_text = self.models['ImageOCRRecognition'].search(coord)
-  
-        # description = self.models['ImageCaptioning'].inference(image_filename)
-        res_mask = self.models['SegmentAnything'].segment_by_mask(self.history_mask)
-        mask_image = Image.fromarray(res_mask.astype(np.uint8)*255)
-        img = self.blend_mask(img, res_mask)
-        seg_filename = gen_new_name(self.uploaded_image_filename, 'mask')
-        mask_image.save(seg_filename, "PNG")
+            new_user_state[0]['memory'] = user_state[0]['memory']
 
-        AI_prompt = f"Received. The mask_path is named {seg_filename}:"
-        self.agent.memory.buffer = self.agent.memory.buffer + Human_prompt + ' AI: ' + AI_prompt
-        # state = state + [(Human_prompt, f"![](file={seg_filename})*{AI_prompt}*")]
-        state = state + [(Human_prompt, f"Received. The segmented image is named {seg_filename}:")]
-        state = state + [(None, (seg_filename, ))]
-        if ocr_text is not None and len(ocr_text) > 0:
-            state = state + [(None, f'OCR result: {ocr_text}')]
-        
-        print(f"\nProcessed process_image, Input image: {self.uploaded_image_filename}\nCurrent state: {state}\n"
-              f"Current Memory: {self.agent.memory.buffer}")
-        return state, state, img
-    
-    def reset(self, clear_history_memory=False):
-        print('reset the model cache.')
-        NEED_RESET_LIST = ['SegmentAnything', 'HuskyVQA']
-        for model_name in NEED_RESET_LIST:
-            if model_name in self.models.keys():
-                self.models[model_name].reset()    
-
-        self.history_mask = None 
-        self.uploaded_image_filename = None
-        if clear_history_memory and bot.memory is not None:
-            self.memory.clear()
-        return None
+        return new_user_state
 
 
 class ImageSketcher(gr.Image):
@@ -1670,8 +1554,6 @@ class ImageSketcher(gr.Image):
                 mask = np.zeros((height, width, 4), dtype=np.uint8)
                 mask[..., -1] = 255
                 mask = self.postprocess(mask)
-                # print(type(mask))
-                # print(mask.shape)
                 x['mask'] = mask
             elif not isinstance(x, dict):
                 # print(x)
@@ -1682,9 +1564,7 @@ class ImageSketcher(gr.Image):
                 # print(width, height)
                 mask = np.zeros((height, width, 4), dtype=np.uint8)
                 mask[..., -1] = 255
-                # print(mask.shape)
                 mask = self.postprocess(mask)
-                # print(type(mask))
                 x = {'image': x, 'mask': mask}
         x = super().preprocess(x)
         return x
@@ -1745,6 +1625,79 @@ css='''
 #image_upload:{align-items: center; min-width: 640px}
 '''
 
+def resize_800(image):
+    w, h = image.size
+    if w > h:
+        ratio = w * 1.0 / 800
+        new_w, new_h = 800, int(h * 1.0 / ratio)
+    else:
+        ratio = h * 1.0 / 800
+        new_w, new_h = int(w * 1.0 / ratio), 800
+    image = image.resize((new_w, new_h))
+    return image
+
+def cut_dialogue_history(history_memory, keep_last_n_words=500):
+    if history_memory is None or len(history_memory) == 0:
+        return history_memory
+    tokens = history_memory.split()
+    n_tokens = len(tokens)
+    print(f"history_memory:{history_memory}, n_tokens: {n_tokens}")
+    if n_tokens < keep_last_n_words:
+        return history_memory
+    paragraphs = history_memory.split('\n')
+    last_n_tokens = n_tokens
+    while last_n_tokens >= keep_last_n_words:
+        last_n_tokens -= len(paragraphs[0].split(' '))
+        paragraphs = paragraphs[1:]
+    return '\n' + '\n'.join(paragraphs)
+
+
+def login_with_key(bot, debug, api_key):
+    # Just for debug
+    print('===>logging in')
+    user_state = [{}]
+    is_error = True
+    if debug:
+        user_state = init_agent(bot)
+        return gr.update(visible=True), gr.update(visible=False), gr.update(visible=False, value=''), user_state
+    else:
+        import openai
+        from langchain.llms.openai import OpenAI
+        if api_key and len(api_key) > 30:
+            os.environ["OPENAI_API_KEY"] = api_key
+            openai.api_key = api_key
+            try:
+                llm = OpenAI(temperature=0)
+                llm('Hi!')
+                response = 'Success!'
+                is_error = False
+                user_state = init_agent(bot)
+            except:
+                # gr.update(visible=True)
+                response = 'Incorrect key, please input again'
+                is_error = True
+        else:
+            is_error = True
+            response = 'Incorrect key, please input again'
+        
+        return gr.update(visible=not is_error), gr.update(visible=is_error), gr.update(visible=is_error, value=response), user_state
+
+def init_agent(bot):
+    memory = ConversationBufferMemory(memory_key="chat_history", output_key='output')
+    llm = OpenAI(temperature=0)
+    agent = initialize_agent(
+            bot.tools,
+            llm,
+            agent="conversational-react-description",
+            verbose=True,
+            memory=memory,
+            return_intermediate_steps=True,
+            agent_kwargs={'prefix': INTERN_CHAT_PREFIX, 'format_instructions': INTERN_CHAT_FORMAT_INSTRUCTIONS,
+                        'suffix': INTERN_CHAT_SUFFIX}, )
+    
+    user_state = [{'agent': agent, 'memory': memory}]
+    return user_state
+    
 def change_input_type(flag):
     if flag:
         print('Using voice input.')
@@ -1772,9 +1725,7 @@ def process_image_tab():
 
 def add_whiteboard():
     # wb = np.ones((1080, 1920, 3), dtype=np.uint8) * 255
-    # wb = np.ones((540, 960, 3), dtype=np.uint8) * 255
     wb = np.ones((720, 1280, 3), dtype=np.uint8) * 255
-    # wb[0, 0, 0] = int(time.time() % 100)
     return Image.fromarray(wb)
 
 
@@ -1783,15 +1734,21 @@ if __name__ == '__main__':
     parser.add_argument('-p', '--port', type=int, default=7862)
     parser.add_argument('-d', '--debug', action='store_true')
     parser.add_argument('--https', action='store_true')
-    parser.add_argument('--load', type=str, default="HuskyVQA_cuda:0,Text2Image_cuda:0")
+    parser.add_argument('--load', type=str, default="HuskyVQA_cuda:0,ImageOCRRecognition_cuda:0,SegmentAnything_cuda:0")
     args = parser.parse_args()
     load_dict = {e.split('_')[0].strip(): e.split('_')[1].strip() for e in args.load.split(',')}
     bot = ConversationBot(load_dict=load_dict)
     # bot.init_agent()
     with gr.Blocks(theme=Seafoam(), css=css) as demo:
         state = gr.State([])
-        gr.HTML("<div align='center'> <img src='/file=./assets/gvlab_logo.png' style='height:70px'/> </div>")
-        
+        # user_state is dict. Keys: [agent, memory, image_path, video_path, seg_mask, image_caption, OCR_res, ...]
+        user_state = gr.State([])
+
+        gr.HTML(
+            """
+            <div align='center'> <img src='/file=./assets/gvlab_logo.png' style='height:70px'/> </div>
+            <p align="center"><a href="https://github.com/OpenGVLab/InternGPT"><b>GitHub</b></a>&nbsp;&nbsp;&nbsp; <a href="https://arxiv.org/pdf/2305.05662.pdf"><b>ArXiv</b></a></p>
+            """)
         with gr.Row(visible=True, elem_id='login') as login:
             with gr.Column(scale=0.6, min_width=0) :
                 openai_api_key_text = gr.Textbox(
@@ -1800,12 +1757,12 @@ if __name__ == '__main__':
                     label="OpenAI API Key",
                     lines=1,
                     type="password").style(container=False)
-            with gr.Column(scale=0.4, min_width=0) :
+            with gr.Column(scale=0.4, min_width=0):
                 key_submit_button = gr.Button(value="Please log in with your OpenAI API Key", interactive=True, variant='primary').style(container=False) 
         
         with gr.Row(visible=False) as user_interface:
             with gr.Column(scale=0.5, elem_id="text_input") as chat_part:
-                chatbot = gr.Chatbot(elem_id="chatbot", label="InternChat").style(height=360)
+                chatbot = gr.Chatbot(elem_id="chatbot", label="InternGPT").style(height=360)
                 with gr.Row(visible=True) as input_row:
                     with gr.Column(scale=0.8, min_width=0) as text_col:
                         txt = gr.Textbox(show_label=False, placeholder="Enter text and press enter, or upload an image").style(
@@ -1841,14 +1798,13 @@ if __name__ == '__main__':
                     video_input = gr.Video(interactive=True, include_audio=True, elem_id="video_upload").style(height=360)
 
             login_func = partial(login_with_key, bot, args.debug)
-            openai_api_key_text.submit(login_func, [openai_api_key_text], [user_interface, openai_api_key_text, key_submit_button])
-            key_submit_button.click(login_func, [openai_api_key_text, ], [user_interface, openai_api_key_text, key_submit_button])
-            # txt.submit(bot.run_text, [txt, state], [chatbot, state])
-            # txt.submit(lambda: "", None, txt)
+            openai_api_key_text.submit(login_func, [openai_api_key_text], [user_interface, openai_api_key_text, key_submit_button, user_state])
+            key_submit_button.click(login_func, [openai_api_key_text, ], [user_interface, openai_api_key_text, key_submit_button, user_state])
+
             txt.submit(
                 lambda: gr.update(visible=False), [], [send_btn]).then(
                 lambda: gr.update(visible=False), [], [txt]).then(
-                bot.run_text, [txt, state], [chatbot, state]).then(
+                bot.run_text, [txt, state, user_state], [chatbot, state, user_state]).then(
                 lambda: gr.update(visible=True), [], [send_btn]
             ).then(lambda: "", None, [txt, ]).then(
                 lambda: gr.update(visible=True), [], [txt])
@@ -1857,57 +1813,120 @@ if __name__ == '__main__':
             send_btn.click(
                 lambda: gr.update(visible=False), [], [send_btn]).then(
                 lambda: gr.update(visible=False), [], [txt]).then(
-                bot.run_task, [audio_switch, txt, audio_input, state], [chatbot, state, txt]).then(
+                bot.run_task, [audio_switch, txt, audio_input, state, user_state], [chatbot, state, user_state]).then(
                 lambda: gr.update(visible=True), [], [send_btn]).then(
+                lambda: "", None, [txt, ]).then(
                 lambda: gr.update(visible=True), [], [txt]
             )
             
             audio_switch.change(change_input_type, [audio_switch, ], [txt, audio_input])
-            add_img_example.click(ramdom_image, [], [click_img,]).then(
-                bot.upload_image, [click_img, state, txt], [chatbot, state, txt])
-
-            add_vid_example.click(ramdom_video, [], [video_input,]).then(
-                bot.upload_video, [video_input, state, txt], [chatbot, state, txt])
+            # add_img_example.click(ramdom_image, [], [click_img,]).then(
+            #     bot.upload_image, [click_img, state, user_state], [chatbot, state, user_state])
             
-            whiteboard_mode.click(add_whiteboard, [], [click_img,])
+            add_img_example.click(ramdom_image, [], [click_img,]).then(
+                lambda: gr.update(visible=False), [], [send_btn]).then(
+                lambda: gr.update(visible=False), [], [txt]).then(
+                lambda: gr.update(visible=False), [], [vis_btn]).then( 
+                bot.upload_image, [click_img, state, user_state], 
+                [chatbot, state, user_state]).then(
+                lambda: gr.update(visible=True), [], [send_btn]).then(
+                lambda: gr.update(visible=True), [], [txt]).then(
+                lambda: gr.update(visible=True), [], [vis_btn])
+
+            # add_vid_example.click(ramdom_video, [], [video_input,]).then(
+            #     bot.upload_video, [video_input, state, user_state], [chatbot, state, user_state])
+            
+            add_vid_example.click(ramdom_video, [], [video_input,]).then(
+                lambda: gr.update(visible=False), [], [send_btn]).then(
+                lambda: gr.update(visible=False), [], [txt]).then(
+                lambda: gr.update(visible=False), [], [vis_btn]).then( 
+                bot.upload_video, [video_input, state, user_state], 
+                [chatbot, state, user_state]).then(
+                lambda: gr.update(visible=True), [], [send_btn]).then(
+                lambda: gr.update(visible=True), [], [txt]).then(
+                lambda: gr.update(visible=True), [], [vis_btn])
+            
+            whiteboard_mode.click(add_whiteboard, [], [click_img, ])
 
             # click_img.upload(bot.upload_image, [click_img, state, txt], [chatbot, state, txt])
-            click_img.upload(lambda: gr.update(visible=False), [], [send_btn]).then(bot.upload_image, [click_img, state, txt], [chatbot, state, txt]).then(lambda: gr.update(visible=True), [], [send_btn])
+            click_img.upload(lambda: gr.update(visible=False), [], [send_btn]).then(
+                lambda: gr.update(visible=False), [], [txt]).then(
+                lambda: gr.update(visible=False), [], [vis_btn]).then( 
+                bot.upload_image, [click_img, state, user_state], 
+                [chatbot, state, user_state]).then(
+                lambda: gr.update(visible=True), [], [send_btn]).then(
+                lambda: gr.update(visible=True), [], [txt]).then(
+                lambda: gr.update(visible=True), [], [vis_btn])
             
-            # process_btn.click(bot.process_image, [click_img, state], [chatbot, state, click_img])
-            # process_ocr_btn.click(bot.process_ocr, [click_img, state], [chatbot, state, click_img])
             process_ocr_btn.click(
                 lambda: gr.update(visible=False), [], [vis_btn]).then(
-                bot.process_ocr, [click_img, state], [chatbot, state, click_img]).then(
+                bot.process_ocr, [click_img, state, user_state], [click_img, chatbot, state, user_state]).then(
                 lambda: gr.update(visible=True), [], [vis_btn]
             )
             # process_seg_btn.click(bot.process_seg, [click_img, state], [chatbot, state, click_img])
             process_seg_btn.click(
                 lambda: gr.update(visible=False), [], [vis_btn]).then(
-                bot.process_seg, [click_img, state], [chatbot, state, click_img]).then(
+                bot.process_seg, [click_img, state, user_state], [click_img, chatbot, state, user_state]).then(
                 lambda: gr.update(visible=True), [], [vis_btn]
             )
             # process_save_btn.click(bot.process_save, [click_img, state], [chatbot, state, click_img])
             process_save_btn.click(
                 lambda: gr.update(visible=False), [], [vis_btn]).then(
-                bot.process_save, [click_img, state], [chatbot, state, click_img]).then(
+                bot.process_save, [click_img, state, user_state], [click_img, chatbot, state, user_state]).then(
                 lambda: gr.update(visible=True), [], [vis_btn]
             )
             video_tab.select(process_video_tab, [], [whiteboard_mode, img_example, vid_example])
             img_tab.select(process_image_tab, [], [whiteboard_mode, img_example, vid_example])
             # clear_img_btn.click(bot.reset, [], [click_img])
-            clear_func = partial(bot.reset, clear_history_memory=True)
-            clear_btn.click(clear_func, [], [click_img]).then(
+            clear_func = partial(bot.clear_user_state, True)
+            clear_btn.click(lambda: None, [], [click_img, ]).then(
                 lambda: [], None, state).then(
+                clear_func, [user_state, ], [user_state, ]).then(
                 lambda: None, None, chatbot
-            )
-            click_img.upload(bot.reset, None, None)
+            ).then(lambda: '', None, [txt, ])
+            # click_img.upload(bot.reset, None, None)
             
-            video_input.upload(bot.upload_video, [video_input, state, txt], [chatbot, state, txt])
-            video_input.clear(bot.reset, [], [video_input])
+            # video_input.upload(bot.upload_video, [video_input, state, user_state], [chatbot, state, user_state])
+            video_input.upload(lambda: gr.update(visible=False), [], [send_btn]).then(
+                lambda: gr.update(visible=False), [], [txt]).then( 
+                bot.upload_video, [video_input, state, user_state], 
+                [chatbot, state, user_state]).then(
+                lambda: gr.update(visible=True), [], [send_btn]).then(
+                lambda: gr.update(visible=True), [], [txt])
+            
+            clear_func = partial(bot.clear_user_state, False)
+            video_input.clear(clear_func, [user_state, ], [user_state, ])
+
+        # (More detailed instructions can be found in <a href="https://www.shailab.org.cn">here</a>:</p>
+        gr.HTML(
+            """
+            <body>
+            <p style="font-family:verdana;color:#FF0000";>Tips!!! (More detailed instructions are coming soon): </p>
+            </body>
+            """
+        )
+        gr.Markdown(
+            '''
+            After uploading the image, you can have a **multi-modal dialogue** by sending messages like: `what is it in the image?` or `what is the background color of image?`.
+            
+            You also can interactively operate, edit or generate the image as follows:
+            - You can click the image and press the button `Pick` to **visualize the segmented region** or press the button `OCR` to **recognize the words** at chosen position;
+            - To **remove the masked reigon** in the image, you can send the message like: `remove the maked region`;
+            - To **replace the masked reigon** in the image, you can send the message like: `replace the maked region with {your prompt}`;
+            - To **generate a new image**, you can send the message like: `generate a new image based on its segmentation decribing {your prompt}`
+            - To **create a new image by your scribble**, you can press button `Whiteboard` and drawing in the below board. After drawing, you need to press the button `Save` and send the message like: `generate a new image based on this scribble decribing {your prompt}`.
+            '''
+        )
+        gr.HTML(
+            """
+            <body>
+            <p style="font-family:verdana;color:#11AA00";>More features is coming soon. Hope you have fun with our demo!</p>
+            </body>
+            """
+        )
 
     if args.https:
-        demo.queue().launch(server_name="0.0.0.0", ssl_certfile="./cert.pem", ssl_keyfile="./key.pem", ssl_verify=False, server_port=args.port)
+        demo.queue().launch(server_name="0.0.0.0", ssl_certfile="./certificate/cert.pem", ssl_keyfile="./certificate/key.pem", ssl_verify=False, server_port=args.port)
     else:
         demo.queue().launch(server_name="0.0.0.0", server_port=args.port)
 

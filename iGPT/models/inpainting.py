@@ -36,7 +36,7 @@ def make_batch(image, mask, device):
 class LDMInpainting:
     def __init__(self, device):
         ckpt_path = 'model_zoo/ldm_inpainting_big.ckpt'
-        config = './iChat/models/inpainting_src/ldm_inpainting/config.yaml'
+        config = './iGPT/models/inpainting_src/ldm_inpainting/config.yaml'
         self.ddim_steps = 50
         self.device = device
         config = OmegaConf.load(config)
