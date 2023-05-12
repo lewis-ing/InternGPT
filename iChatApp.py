@@ -6,6 +6,11 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent / "third-party" / "lama"))
 
+try:
+    import detectron
+except:
+    os.system('pip install git+https://github.com/facebookresearch/detectron2.git')
+
 import random
 import torch
 import cv2
