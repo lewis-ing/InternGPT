@@ -10,7 +10,7 @@ if __name__ == '__main__':
             <a href="https://github.com/OpenGVLab/InternGPT/assets/13723743/8fd9112f-57d9-4871-a369-4e1929aa2593"><b>Video Demo</b></a></p>
             """
         )
-        # <div align='center'><p style="font-family:verdana;> You can try our demo via </p> </div> <a href="https://igpt.opengvlab.com">https://igpt.opengvlab.com</a>
+        
         gr.HTML(
         """
         <body>
