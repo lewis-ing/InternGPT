@@ -5,7 +5,8 @@ if __name__ == '__main__':
         gr.HTML(
             """
             <div align='center'> <img src='/file=./assets/gvlab_logo.png' style='height:70px'/> </div>
-            <p align="center"><a href="https://github.com/OpenGVLab/InternGPT"><b>GitHub</b></a>&nbsp;&nbsp;&nbsp;&nbsp; <a href="https://arxiv.org/pdf/2305.05662.pdf"><b>Report</b></a>
+            <p align="center"><a href="https://github.com/OpenGVLab/InternGPT"><b>GitHub</b></a>&nbsp;&nbsp;&nbsp;&nbsp; 
+            <a href="https://arxiv.org/pdf/2305.05662.pdf"><b>Report</b></a>&nbsp;&nbsp;&nbsp;
             <a href="https://github.com/OpenGVLab/InternGPT/assets/13723743/8fd9112f-57d9-4871-a369-4e1929aa2593"><b>Video Demo</b></a></p>
             """
         )
