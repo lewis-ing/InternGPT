@@ -1,5 +1,5 @@
 ---
-title: InternChat
+title: InternGPT
 emoji: 🤖💬
 colorFrom: indigo
 colorTo: pink
